@@ -1,0 +1,14 @@
+{
+  "name": "@allnulled/lsw-filesystem",
+  "version": "1.0.0",
+  "description": "Filesystem tool based on IDB for LSW.",
+  "main": "lsw-filesystem.js",
+  "scripts": {
+    "build": "node bundler.js",
+    "versionate": "echo 'no versionate for node.js of lsw-filesystem'",
+    "test": "npx universal-tester test.js"
+  },
+  "keywords": ["filesystem", "fs", "idb"],
+  "author": "allnulled",
+  "license": "WTFPL"
+}
