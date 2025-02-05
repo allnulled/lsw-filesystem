@@ -11,7 +11,7 @@
   }
 })(function () {
   
-  class LswFilesystem {
+  class LswFilesystem extends UFS_Manager {
 
   }
 

@@ -1,10 +1,4 @@
 /*
-  @artifact:  Lite Starter Web Dependency
-  @url:       https://github.com/allnulled/lsw-filesystem.git
-  @name:      @allnulled/lsw-filesystem
-  @version:   1.0.0
-*/
-/*
   @artifact:     Independent artifact
   @feature:      node and browser
   @url:          https://github.com/allnulled/universal-file-system.git
@@ -555,24 +549,4 @@
   };
 
   return api;
-});
-(function (factory) {
-  const mod = factory();
-  if (typeof window !== 'undefined') {
-    window['LswFilesystem'] = mod;
-  }
-  if (typeof global !== 'undefined') {
-    global['LswFilesystem'] = mod;
-  }
-  if (typeof module !== 'undefined') {
-    module.exports = mod;
-  }
-})(function () {
-  
-  class LswFilesystem extends UFS_Manager {
-
-  }
-
-  return LswFilesystem;
-
 });
