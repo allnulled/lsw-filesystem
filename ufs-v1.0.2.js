@@ -485,12 +485,19 @@
     delete_directory(nodeInput) {
       this.trace("delete_directory", arguments);
       const node = this.resolve_path(nodeInput);
+      const memos = [node];
       return new Promise((resolve, reject) => {
         this.read_directory(node).then(async (contents) => {
           const transaction = this.db.transaction("ufs", "readwrite");
           const store = transaction.objectStore("ufs");
+          Iterating_files:
           for (let item in contents) {
-            await this.delete_directory(`${node}/${item}`);
+            const otherPath = this.resolve_path(`${node}/${item}`);
+            if(memos.indexOf(otherPath) !== -1) {
+              continue Iterating_files;
+            }
+            memos.push(otherPath);
+            await this.delete_directory(otherPath);
           }
           store.delete(node);
           transaction.oncomplete = () => resolve();

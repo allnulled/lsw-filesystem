@@ -11,7 +11,7 @@
   }
 })(function () {
   
-  class LswFilesystem extends UFS_Manager {
+  class LswFilesystem extends UFS_manager.idb_driver {
 
   }
 
