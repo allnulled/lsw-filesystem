@@ -40,7 +40,7 @@
       return this;
     }
     trace(method, args = []) {
-      console.log("[ufs][node-driver][" + method + "]", Array.from(args).map(arg => typeof(arg) + ": " + arg).join(", "));
+      console.log("[ufs][node-driver][" + method + "]", Array.from(args).map(arg => typeof (arg) + ": " + arg).join(", "));
     }
     resolve_path(...args) {
       this.trace("resolve_path", arguments);
@@ -99,7 +99,7 @@
       return require("fs").rmdirSync(node, { recursive: true });
     }
   }
-  
+
   const UFS_manager_for_localstorage = class extends UFS_manager_for_node {
     constructor(storage_id = "ufs_main_storage") {
       super();
@@ -107,7 +107,7 @@
       this.current_directory = this.environment === "node" ? process.cwd : "/";
     }
     trace(method, args = []) {
-      console.log("[ufs][ls-driver][" + method + "]", Array.from(args).map(arg => typeof(arg) + ": " + arg).join(", "));
+      console.log("[ufs][ls-driver][" + method + "]", Array.from(args).map(arg => typeof (arg) + ": " + arg).join(", "));
     }
     get_persisted_data() {
       this.trace("get_persisted_data", arguments);
@@ -362,7 +362,7 @@
     }
 
     trace(method, args = []) {
-      console.log("[ufs][idb-driver][" + method + "]", Array.from(args).map(arg => typeof(arg) + ": " + arg).join(", "));
+      console.log("[ufs][idb-driver][" + method + "]", Array.from(args).map(arg => typeof (arg) + ": " + arg).join(", "));
     }
 
     init() {
@@ -371,8 +371,11 @@
         request.onupgradeneeded = (event) => {
           let db = event.target.result;
           if (!db.objectStoreNames.contains("ufs")) {
-            let store = db.createObjectStore("ufs", { keyPath: "id" });
-            store.createIndex("parentId", "parentId", { unique: false });
+            let store = db.createObjectStore("ufs", {
+              keyPath: "id",
+              autoIncrement: true,
+            });
+            store.createIndex("filepath", "filepath", { unique: true });
           }
         };
         request.onsuccess = (event) => {
@@ -383,20 +386,66 @@
       });
     }
 
+    _get_filename(somepath) {
+      return somepath.split("/").filter(p => typeof (p) !== "undefined").pop();
+    }
+
+    isImmediateSubpathFrom(subpath, matchable) {
+      const matchablePos = matchable.length;
+      const coincidesParentPath = subpath.substr(0, matchablePos) === matchable;
+      if (!coincidesParentPath) return false;
+      const hasNoMoreSlashes = subpath.substr(matchablePos).indexOf("/") === -1;
+      if (!hasNoMoreSlashes) return false;
+      return true;
+    }
+
     read_directory(parentIdInput = "/") {
       this.trace("read_directory", arguments);
       const parentId = this.resolve_path(parentIdInput);
       return new Promise((resolve, reject) => {
-        const transaction = this.db.transaction("ufs", "readonly");
-        const store = transaction.objectStore("ufs");
-        const index = store.index("parentId");
-        const request = index.getAll(parentId);
-        request.onsuccess = () => {
-          let result = {};
-          for (let item of request.result) {
-            result[item.name] = item.type === "file" ? "..." : {};
+        The_previous_process: {
+          break The_previous_process;
+          const transaction = this.db.transaction("ufs", "readonly");
+          const store = transaction.objectStore("ufs");
+          const index = store.index("filepath");
+          const request = index.getAll(parentId);
+          request.onsuccess = () => {
+            let result = {};
+            for (let item of request.result) {
+              result[item.name] = item.type === "file" ? "..." : {};
+            }
+            resolve(result);
+          };
+        }
+        const transaction = this.db.transaction("ufs", 'readonly');
+        const objectStore = transaction.objectStore("ufs");
+        const request = objectStore.openCursor(); // Usa cursor para recorrer la BD sin cargar todo en memoria
+        const results = [];
+        const matchableSubpath = (parentId === "/") ? parentId : (parentId + "/");
+        request.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            let isAccepted = false;
+            try {
+              isAccepted = cursor.value.filepath.startsWith(matchableSubpath);
+              isAccepted = isAccepted && this.isImmediateSubpathFrom(cursor.value.filepath, matchableSubpath);
+            } catch (error) {
+              console.error("Error arised from filter callback on «browsie.selectMany»", error);
+            }
+            if (isAccepted) {
+              // Añade a la colección de salida
+              results.push(cursor.value);
+            }
+            cursor.continue(); // Avanza al siguiente registro
+          } else {
+            // Se formatean los resultados:
+            const formattedResults = {};
+            results.forEach(row => {
+              const rowName = this._get_filename(row.filepath);
+              formattedResults[rowName] = row.type === "file" ? "..." : {};
+            });
+            resolve(formattedResults);
           }
-          resolve(result);
         };
         request.onerror = () => reject(request.error);
       });
@@ -408,7 +457,8 @@
       return new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readonly");
         const store = transaction.objectStore("ufs");
-        const request = store.get(node);
+        const indexStore = store.index("filepath");
+        const request = indexStore.get(node);
         request.onsuccess = () => {
           resolve(request.result ? request.result.content : null);
         };
@@ -416,25 +466,30 @@
       });
     }
 
-    write_file(nodeInput, contents) {
+    async write_file(nodeInput, contents) {
       this.trace("write_file", arguments);
       const node = this.resolve_path(nodeInput);
-      return new Promise((resolve, reject) => {
+      const file = await this.$filepath(node);
+      return await new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readwrite");
         const store = transaction.objectStore("ufs");
-        store.put({ id: node, name: node.split("/").pop(), parentId: node.split("/").slice(0, -1).join("/") || "/", type: "file", content: contents });
+        const filedata = { filepath: node, type: "file", content: contents };
+        if (file) {
+          filedata.id = file.id;
+        }
+        store.put(filedata);
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
       });
     }
 
-    make_directory(nodeInput) {
+    async make_directory(nodeInput) {
       this.trace("make_directory", arguments);
       const node = this.resolve_path(nodeInput);
-      return new Promise((resolve, reject) => {
+      return await new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readwrite");
         const store = transaction.objectStore("ufs");
-        store.put({ id: node, name: node.split("/").pop(), parentId: node.split("/").slice(0, -1).join("/") || "/", type: "directory" });
+        store.put({ filepath: node, type: "directory" });
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
       });
@@ -446,7 +501,8 @@
       return new Promise((resolve) => {
         const transaction = this.db.transaction("ufs", "readonly");
         const store = transaction.objectStore("ufs");
-        const request = store.get(node);
+        const indexStore = store.index("filepath");
+        const request = indexStore.get(node);
         request.onsuccess = () => resolve(!!request.result);
         request.onerror = () => resolve(false);
       });
@@ -458,7 +514,8 @@
       return new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readonly");
         const store = transaction.objectStore("ufs");
-        const request = store.get(node);
+        const indexStore = store.index("filepath");
+        const request = indexStore.get(node);
         request.onsuccess = () => resolve(request.result ? request.result.type === "file" : false);
         request.onerror = () => reject(request.error);
       });
@@ -470,7 +527,8 @@
       return new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readonly");
         const store = transaction.objectStore("ufs");
-        const request = store.get(node);
+        const indexStore = store.index("filepath");
+        const request = indexStore.get(node);
         request.onsuccess = () => resolve(request.result ? request.result.type === "directory" : false);
         request.onerror = () => reject(request.error);
       });
@@ -479,36 +537,69 @@
     delete_file(nodeInput) {
       this.trace("delete_file", arguments);
       const node = this.resolve_path(nodeInput);
-      return new Promise((resolve, reject) => {
-        const transaction = this.db.transaction("ufs", "readwrite");
-        const store = transaction.objectStore("ufs");
-        const request = store.delete(node);
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error);
+      return this.$deleteMany(file => {
+        return (file.type === "file") && (file.filepath === node);
       });
     }
 
-    delete_directory(nodeInput) {
+    async delete_directory(nodeInput) {
       this.trace("delete_directory", arguments);
       const node = this.resolve_path(nodeInput);
-      const memos = [node];
+      await this.$deleteMany(file => file.filepath.startsWith(node));
+      await this.$deleteMany(file => file.filepath === node);
+    }
+
+    $updateMany(filterCallback, expanderCallback) {
+      this.trace("$updateMany", arguments);
       return new Promise((resolve, reject) => {
-        this.read_directory(node).then(async (contents) => {
-          const transaction = this.db.transaction("ufs", "readwrite");
-          const store = transaction.objectStore("ufs");
-          Iterating_files:
-          for (let item in contents) {
-            const otherPath = this.resolve_path(`${node}/${item}`);
-            if(memos.indexOf(otherPath) !== -1) {
-              continue Iterating_files;
+        const transaction = this.db.transaction("ufs", 'readwrite');
+        const objectStore = transaction.objectStore("ufs");
+        const request = objectStore.openCursor();
+        let updatedCount = 0;
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (cursor) {
+            const isAccepted = filterCallback(cursor.value, cursor);
+            if (isAccepted) {
+              const expanderItem = expanderCallback({ ...cursor.value }, cursor);
+              const updatedItem = { ...cursor.value, ...expanderItem };
+              const updateRequest = cursor.update(updatedItem);
+              updateRequest.onsuccess = () => {
+                updatedCount++;
+              };
             }
-            memos.push(otherPath);
-            await this.delete_directory(otherPath);
+            cursor.continue();
+          } else {
+            return resolve(updatedCount);
           }
-          store.delete(node);
-          transaction.oncomplete = () => resolve();
-          transaction.onerror = () => reject(transaction.error);
-        });
+        };
+        request.onerror = () => reject(transaction.error);
+      });
+    }
+
+    $deleteMany(filterCallback) {
+      this.trace("$deleteMany", arguments);
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction("ufs", 'readwrite');
+        const objectStore = transaction.objectStore("ufs");
+        const request = objectStore.openCursor();
+        let deletedCount = 0;
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (cursor) {
+            const isAccepted = filterCallback(cursor.value, cursor);
+            if (isAccepted) {
+              const deleteRequest = cursor.delete();
+              deleteRequest.onsuccess = () => {
+                deletedCount++;
+              };
+            }
+            cursor.continue();
+          } else {
+            return resolve(deletedCount);
+          }
+        };
+        request.onerror = () => reject(transaction.error);
       });
     }
 
@@ -516,28 +607,100 @@
       this.trace("rename", arguments);
       const node = this.resolve_path(nodeInput);
       const newNode = node.split("/").slice(0, -1).concat(newName).join("/") || "/";
-      return new Promise((resolve, reject) => {
+      const pathBegin = node.replace(/\/$/g, "") + "/";
+      const newNodeBegin = newNode.replace(/\/$/g, "") + "/";
+      console.log("Buscando nodos que empiecen por: «" + pathBegin + "»");
+      const renameSubnodes = async () => {
+        const allSubnodes = await this.$selectMany(file => file.filepath.startsWith(pathBegin));
+        const allPromises = [];
+        for (let index = 0; index < allSubnodes.length; index++) {
+          const subnode = allSubnodes[index];
+          const newSubpath = subnode.filepath.replace(pathBegin, newNodeBegin);;
+          console.log("Reemplazando a:", subnode.filepath, "Por:", newSubpath);
+          const subpromise = this.$update(subnode.id, { filepath: newSubpath });
+          allPromises.push(subpromise);
+        }
+        return await Promise.all(allPromises);
+      };
+      const renameNode = () => new Promise((resolve, reject) => {
         const transaction = this.db.transaction("ufs", "readwrite");
         const store = transaction.objectStore("ufs");
-        const request = store.get(node);
+        const indexStore = store.index("filepath");
+        const request = indexStore.get(node);
         request.onsuccess = () => {
           if (!request.result) {
             reject(new Error("Node not found"));
             return;
           }
           const data = request.result;
-          data.id = newNode;
-          data.name = newName;
-          store.delete(node);
+          data.filepath = newNode;
           store.put(data);
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error);
         };
         request.onerror = () => reject(request.error);
       });
-    }    
+      return Promise.all([
+        renameNode().then(() => renameSubnodes()),
+      ]);
+    }
 
-  };
+    async $filepath(filepath) {
+      const selection = await this.$selectMany(file => file.filepath === filepath);
+      if (selection.length === 1) {
+        return selection[0];
+      } else if (selection.length > 1) {
+        return selection;
+      }
+      return null;
+    }
+
+    $selectMany(filterCallback) {
+      this.trace("$selectMany", arguments);
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction("ufs", 'readonly');
+        const objectStore = transaction.objectStore("ufs");
+        const request = objectStore.openCursor(); // Usa cursor para recorrer la BD sin cargar todo en memoria
+        const results = [];
+        request.onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (cursor) {
+            let isAccepted = undefined;
+            try {
+              isAccepted = filterCallback(cursor.value);
+            } catch (error) {
+              console.error("Error arised from filter callback on «selectMany»", error);
+            }
+            if (isAccepted) { // Aplica la función de filtro
+              results.push(cursor.value);
+            }
+            cursor.continue(); // Avanza al siguiente registro
+          } else {
+            resolve(results); // Se terminó el recorrido
+          }
+        };
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    $update(id, item) {
+      this.trace("$update", arguments);
+      return new Promise((resolve, reject) => {
+        const transaction = this.db.transaction("ufs", 'readwrite');
+        const objectStore = transaction.objectStore("ufs");
+        const request0 = objectStore.get(id);
+        request0.onsuccess = () => {
+          const originalState = request0.result;
+          if (!originalState) return reject(`No item found by id «${id}» on «$update»`);
+          const request = objectStore.put({ ...originalState, ...item, id });
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        };
+        request0.onerror = () => reject(request0.error);
+      });
+    }
+
+  }
 
   const api = {
     node_driver: UFS_manager_for_node,
@@ -549,7 +712,7 @@
     },
     driver(id) {
       const driverId = id.toLowerCase() + "_driver";
-      if(!(driverId in api)) {
+      if (!(driverId in api)) {
         throw new Error(`Cannot find driver «${driverId}» on «UFS_manager.driver»`);
       }
       return {
